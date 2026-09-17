@@ -77,18 +77,13 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
           {
             id: markerId,
             elementLayer: videoEl as any,
-            position: [
-              {
-                yaw: node.videoPosition?.yaw ?? 0,
-                pitch: node.videoPosition?.pitch ?? 0,
-              },
-              { yaw: (node.videoPosition?.yaw ?? 0) + 0.01, pitch: 0 },
-              { yaw: (node.videoPosition?.yaw ?? 0) + 0.01, pitch: 0.01 },
-              { yaw: node.videoPosition?.yaw ?? 0, pitch: 0.01 },
-            ],
+            position: {
+              yaw: node.videoPosition?.yaw ?? 0,
+              pitch: node.videoPosition?.pitch ?? 0,
+            },
             size: { width: node.videoSize?.width ?? 600, height: node.videoSize?.height ?? 340 },
             visible: true,
-          },
+          } as any,
           true,
         );
         videoMarkerRef.current = markerId;
