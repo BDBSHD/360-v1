@@ -17,6 +17,8 @@ import {
   X,
   Compass,
   Move,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 
 type Props = {
@@ -34,6 +36,9 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
   const [showInfo, setShowInfo] = useState(false);
   const [muted, setMuted] = useState(true);
   const [currentNode, setCurrentNode] = useState<TourNode>(tourNodes[0]);
+  const [isVideoZoomed, setIsVideoZoomed] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const createVideoElement = useCallback((node: TourNode): HTMLElement => {
     const wrapper = document.createElement("div");
@@ -97,7 +102,9 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
 
     const viewer = new Viewer({
       container: containerRef.current,
-      defaultZoomLvl: 50,
+      defaultZoomLvl: 30,
+      minFov: 20,
+      maxFov: 70,
       navbar: ["zoom", "fullscreen"],
       mousewheelCtrlKey: false,
       mousemove: true,
@@ -160,6 +167,7 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
         if (matched) {
           setCurrentNode(matched);
           onNodeChange(matched);
+          setIsVideoZoomed(false);
           updateVideoMarker(matched);
         }
       });
@@ -207,14 +215,133 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
       if (idx === -1) return;
       const nextIdx = direction === "next" ? idx + 1 : idx - 1;
       if (nextIdx < 0 || nextIdx >= tourNodes.length) return;
-      tourPlugin.setCurrentNode(tourNodes[nextIdx].id);
+
+      setTransitioning(true);
+      setTimeout(() => {
+        tourPlugin.setCurrentNode(tourNodes[nextIdx].id);
+        setTimeout(() => setTransitioning(false), 300);
+      }, 250);
     },
     [],
   );
 
+  const goToNodeById = useCallback((nodeId: string) => {
+    const tourPlugin = viewerRef.current?.getPlugin(VirtualTourPlugin) as any;
+    if (!tourPlugin) return;
+    const current = tourPlugin.getCurrentNode();
+    if (current && current.id === nodeId) return;
+
+    setTransitioning(true);
+    setTimeout(() => {
+      tourPlugin.setCurrentNode(nodeId);
+      setTimeout(() => setTransitioning(false), 300);
+    }, 250);
+  }, []);
+
+  const zoomToVideo = useCallback(() => {
+    if (!viewerRef.current || !currentNode.hasVideo) return;
+    const vp = currentNode.videoPosition;
+    if (!vp) return;
+
+    viewerRef.current.animate({
+      yaw: vp.yaw,
+      pitch: vp.pitch,
+      zoom: 85,
+      speed: "5rpm",
+    });
+    setIsVideoZoomed(true);
+  }, [currentNode]);
+
+  const zoomOutFromVideo = useCallback(() => {
+    if (!viewerRef.current) return;
+    viewerRef.current.animate({
+      zoom: 30,
+      speed: "5rpm",
+    });
+    setIsVideoZoomed(false);
+  }, []);
+
+  const toggleVideoZoom = useCallback(() => {
+    if (isVideoZoomed) {
+      zoomOutFromVideo();
+    } else {
+      zoomToVideo();
+    }
+  }, [isVideoZoomed, zoomToVideo, zoomOutFromVideo]);
+
+  // Auto-zoom to video when entering a room with video
+  useEffect(() => {
+    if (zoomTimerRef.current) {
+      clearTimeout(zoomTimerRef.current);
+      zoomTimerRef.current = null;
+    }
+    if (currentNode.hasVideo && !isVideoZoomed) {
+      zoomTimerRef.current = setTimeout(() => {
+        zoomToVideo();
+      }, 1500);
+    }
+    return () => {
+      if (zoomTimerRef.current) {
+        clearTimeout(zoomTimerRef.current);
+        zoomTimerRef.current = null;
+      }
+    };
+  }, [currentNode, isVideoZoomed, zoomToVideo]);
+
+  // ESC key to zoom out from video
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isVideoZoomed) {
+        e.preventDefault();
+        zoomOutFromVideo();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isVideoZoomed, zoomOutFromVideo]);
+
+  // Double-click on panorama to switch rooms
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleDblClick = () => {
+      const idx = tourNodes.findIndex((n) => n.id === currentNode.id);
+      if (idx === -1) return;
+      const nextIdx = idx + 1;
+      if (nextIdx < tourNodes.length) {
+        goToNodeById(tourNodes[nextIdx].id);
+      } else {
+        goToNodeById(tourNodes[0].id);
+      }
+    };
+
+    container.addEventListener("dblclick", handleDblClick);
+    return () => container.removeEventListener("dblclick", handleDblClick);
+  }, [currentNode, goToNodeById]);
+
+  const currentIndex = tourNodes.findIndex((n) => n.id === currentNode.id);
+
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full" />
+
+      {/* Transition overlay */}
+      <div
+        className={`absolute inset-0 z-40 pointer-events-none bg-[#0a1628] transition-opacity duration-300 ${
+          transitioning ? "opacity-100" : "opacity-0"
+        }`}
+      >
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-12 h-12 relative">
+            <div className="absolute inset-0 rounded-full border-2 border-slate-700/50" />
+            <div
+              className="absolute inset-0 rounded-full border-2 border-transparent border-t-cyan-400"
+              style={{ animation: "spin 1s linear infinite" }}
+            />
+          </div>
+        </div>
+      </div>
 
       {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-20 pointer-events-none">
@@ -279,92 +406,149 @@ export default function VirtualTour({ onNodeChange, onReady, onProgress }: Props
               </div>
               <div className="flex items-center gap-2 text-slate-400">
                 <Compass className="w-4 h-4 text-cyan-400" />
-                <span>Fes clic a les fletxes per canviar de sala</span>
+                <span>Doble clic per canviar de sala</span>
               </div>
+              {currentNode.hasVideo && (
+                <div className="flex items-center gap-2 text-slate-400">
+                  <ZoomIn className="w-4 h-4 text-cyan-400" />
+                  <span>Zoom automàtic al vídeo · ESC per sortir</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Bottom controls */}
-      <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
-        <div className="flex items-center justify-center gap-3 pb-6">
-          <button
-            onClick={() => goToNode("prev")}
-            disabled={tourNodes.findIndex((n) => n.id === currentNode.id) === 0}
-            className="pointer-events-auto glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:scale-105"
-            aria-label="Sala anterior"
-          >
-            <ChevronLeft className="w-5 h-5 text-white" />
-          </button>
-
-          {/* Room indicators */}
-          <div className="pointer-events-auto glass-panel rounded-full px-4 py-2.5 flex items-center gap-2">
-            {tourNodes.map((node, i) => (
-              <div key={node.id} className="flex items-center gap-2">
-                <div
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-full transition-all duration-300 ${
+      {/* Right-side vertical room navigation */}
+      <div className="absolute top-1/2 right-6 -translate-y-1/2 z-20 pointer-events-auto">
+        <div className="glass-panel rounded-2xl p-2 flex flex-col gap-1.5 animate-fade-in">
+          {tourNodes.map((node, i) => (
+            <div key={node.id} className="flex flex-col items-center gap-1.5">
+              <button
+                onClick={() => goToNodeById(node.id)}
+                className={`group relative flex items-center justify-center w-12 h-12 rounded-xl transition-all duration-300 ${
+                  node.id === currentNode.id
+                    ? "bg-cyan-500/25 ring-1 ring-cyan-400/50"
+                    : "hover:bg-cyan-500/10"
+                }`}
+                aria-label={node.title}
+              >
+                <span
+                  className={`font-display text-sm font-semibold transition-colors duration-300 ${
                     node.id === currentNode.id
-                      ? "bg-cyan-500/20 text-white"
-                      : "text-slate-400 hover:text-slate-200"
+                      ? "text-cyan-300"
+                      : "text-slate-400 group-hover:text-slate-200"
                   }`}
                 >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
-                      node.id === currentNode.id
-                        ? "bg-cyan-400 scale-125"
-                        : "bg-slate-500"
-                    }`}
-                  />
-                  <span className="text-xs font-medium">{node.name}</span>
-                </div>
-                {i < tourNodes.length - 1 && (
-                  <div className="w-4 h-px bg-slate-600" />
+                  {i + 1}
+                </span>
+                {node.id === currentNode.id && (
+                  <span className="absolute -right-0.5 top-1/2 -translate-y-1/2 w-1 h-6 rounded-full bg-cyan-400" />
                 )}
-              </div>
-            ))}
-          </div>
-
-          <button
-            onClick={() => goToNode("next")}
-            disabled={
-              tourNodes.findIndex((n) => n.id === currentNode.id) ===
-              tourNodes.length - 1
-            }
-            className="pointer-events-auto glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:scale-105"
-            aria-label="Sala següent"
-          >
-            <ChevronRight className="w-5 h-5 text-white" />
-          </button>
-        </div>
-
-        {/* Right-side floating controls */}
-        <div className="absolute bottom-6 right-6 flex flex-col gap-2 pointer-events-auto">
-          {currentNode.hasVideo && (
-            <button
-              onClick={toggleMute}
-              className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 hover:scale-105"
-              aria-label={muted ? "Activa el so" : "Silencia"}
-            >
-              {muted ? (
-                <VolumeX className="w-5 h-5 text-white" />
-              ) : (
-                <Volume2 className="w-5 h-5 text-white" />
+                <span className="absolute left-full ml-3 whitespace-nowrap glass-panel rounded-lg px-2.5 py-1 text-xs text-white opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-200">
+                  {node.title}
+                </span>
+              </button>
+              {i < tourNodes.length - 1 && (
+                <div className="w-px h-4 bg-slate-600/50" />
               )}
-            </button>
-          )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Room indicator pills (bottom center) */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
+        <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-2 animate-fade-in-up">
+          {tourNodes.map((node, i) => (
+            <div key={node.id} className="flex items-center gap-2">
+              <button
+                onClick={() => goToNodeById(node.id)}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full transition-all duration-300 ${
+                  node.id === currentNode.id
+                    ? "bg-cyan-500/20 text-white"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
+                    node.id === currentNode.id
+                      ? "bg-cyan-400 scale-125" 
+                      : "bg-slate-500"
+                  }`}
+                />
+                <span className="text-xs font-medium">{node.name}</span>
+              </button>
+              {i < tourNodes.length - 1 && (
+                <div className="w-4 h-px bg-slate-600" />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom-left navigation arrows */}
+      <div className="absolute bottom-6 left-6 z-20 pointer-events-auto flex items-center gap-2">
+        <button
+          onClick={() => goToNode("prev")}
+          disabled={currentIndex === 0}
+          className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:scale-105"
+          aria-label="Sala anterior"
+        >
+          <ChevronLeft className="w-5 h-5 text-white" />
+        </button>
+        <span className="text-xs text-slate-400 font-medium tabular-nums px-1">
+          {currentIndex + 1} / {tourNodes.length}
+        </span>
+        <button
+          onClick={() => goToNode("next")}
+          disabled={currentIndex === tourNodes.length - 1}
+          className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:scale-105"
+          aria-label="Sala següent"
+        >
+          <ChevronRight className="w-5 h-5 text-white" />
+        </button>
+      </div>
+
+      {/* Right-side floating controls (volume, zoom, fullscreen) */}
+      <div className="absolute bottom-6 right-6 flex flex-col gap-2 pointer-events-auto">
+        {currentNode.hasVideo && (
           <button
-            onClick={toggleFullscreen}
+            onClick={toggleVideoZoom}
             className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 hover:scale-105"
-            aria-label="Pantalla completa"
+            aria-label={isVideoZoomed ? "Allunya del vídeo" : "Apropa al vídeo"}
           >
-            {isFullscreen ? (
-              <Minimize2 className="w-5 h-5 text-white" />
+            {isVideoZoomed ? (
+              <ZoomOut className="w-5 h-5 text-cyan-300" />
             ) : (
-              <Maximize2 className="w-5 h-5 text-white" />
+              <ZoomIn className="w-5 h-5 text-white" />
             )}
           </button>
-        </div>
+        )}
+        {currentNode.hasVideo && (
+          <button
+            onClick={toggleMute}
+            className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 hover:scale-105"
+            aria-label={muted ? "Activa el so" : "Silencia"}
+          >
+            {muted ? (
+              <VolumeX className="w-5 h-5 text-white" />
+            ) : (
+              <Volume2 className="w-5 h-5 text-white" />
+            )}
+          </button>
+        )}
+        <button
+          onClick={toggleFullscreen}
+          className="glass-panel rounded-full p-3 hover:bg-cyan-500/20 transition-all duration-200 hover:scale-105"
+          aria-label="Pantalla completa"
+        >
+          {isFullscreen ? (
+            <Minimize2 className="w-5 h-5 text-white" />
+          ) : (
+            <Maximize2 className="w-5 h-5 text-white" />
+          )}
+        </button>
       </div>
     </div>
   );
